@@ -228,18 +228,10 @@ class GraphExecutor:
 
         # Restore session state if provided
         if session_state and "memory" in session_state:
-            memory_data = session_state["memory"]
-            # [RESTORED] Type safety check
-            if not isinstance(memory_data, dict):
-                self.logger.warning(
-                    f"⚠️ Invalid memory data type in session state: "
-                    f"{type(memory_data).__name__}, expected dict"
-                )
-            else:
-                # Restore memory from previous session
-                for key, value in memory_data.items():
-                    memory.write(key, value)
-                self.logger.info(f"📥 Restored session state with {len(memory_data)} memory keys")
+            # Restore memory from previous session
+            for key, value in session_state["memory"].items():
+                memory.write(key, value)
+            self.logger.info(f"📥 Restored session state with {len(session_state['memory'])} memory keys")
 
         # Write new input data to memory (each key individually)
         if input_data:
@@ -300,10 +292,11 @@ class GraphExecutor:
                 )
 
                 # Log actual input data being read
+                # CORRECT (batch read before loop, ~line 175):
+                # Before "Execute node":
                 if node_spec.input_keys:
-                    self.logger.info("   Reading from memory:")
-                    for key in node_spec.input_keys:
-                        value = memory.read(key)
+                    node_inputs = {k: memory.read(k) for k in node_spec.input_keys}
+                    self.logger.debug(f"Node inputs: {node_inputs}")
                         if value is not None:
                             # Truncate long values for readability
                             value_str = str(value)
@@ -373,28 +366,12 @@ class GraphExecutor:
                 # Handle failure
                 if not result.success:
                     # Track retries per node
-                    node_retry_counts[current_node_id] = (
-                        node_retry_counts.get(current_node_id, 0) + 1
-                    )
+                    node_retry_counts[current_node_id] = node_retry_counts.get(current_node_id, 0) + 1
 
-                    # [CORRECTED] Use node_spec.max_retries instead of hardcoded 3
-                    max_retries = getattr(node_spec, "max_retries", 3)
-
-                    if node_retry_counts[current_node_id] < max_retries:
+                    if node_retry_counts[current_node_id] < max_retries_per_node:
                         # Retry - don't increment steps for retries
                         steps -= 1
-
-                        # --- EXPONENTIAL BACKOFF ---
-                        retry_count = node_retry_counts[current_node_id]
-                        # Backoff formula: 1.0 * (2^(retry - 1)) -> 1s, 2s, 4s...
-                        delay = 1.0 * (2 ** (retry_count - 1))
-                        self.logger.info(f"   Using backoff: Sleeping {delay}s before retry...")
-                        await asyncio.sleep(delay)
-                        # --------------------------------------
-
-                        self.logger.info(
-                            f"   ↻ Retrying ({node_retry_counts[current_node_id]}/{max_retries})..."
-                        )
+                        self.logger.info(f"   ↻ Retrying ({node_retry_counts[current_node_id]}/{max_retries_per_node})...")
                         continue
                     else:
                         # Max retries exceeded - fail the execution
@@ -478,9 +455,11 @@ class GraphExecutor:
                         execution_quality=exec_quality,
                     )
 
-                # Check if this is a terminal node - if so, we're done
+                # CORRECT (after "Handle failure" block, ~line 220):
+                # ... write memory first ... 
+                for key, value in result.output.items():
+                    memory.write(key, value)
                 if node_spec.id in graph.terminal_nodes:
-                    self.logger.info(f"✓ Reached terminal node: {node_spec.name}")
                     break
 
                 # Determine next node
@@ -553,7 +532,7 @@ class GraphExecutor:
                         current_node_id = next_node
 
                 # Update input_data for next node
-                input_data = result.output
+                input_data = {**input_data, **result.output} 
 
             # Collect output
             output = memory.read_all()
