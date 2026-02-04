@@ -366,14 +366,18 @@ class GraphExecutor:
                 # Handle failure
                 if not result.success:
                     # Track retries per node
-                    node_retry_counts[current_node_id] = node_retry_counts.get(current_node_id, 0) + 1
+                    retry_count = node_retry_counts.get(current_node_id, 0) + 1
+                    node_retry_counts[current_node_id] = retry_count
 
-                    if node_retry_counts[current_node_id] < max_retries_per_node:
-                        # Retry - don't increment steps for retries
-                        steps -= 1
-                        self.logger.info(f"   ↻ Retrying ({node_retry_counts[current_node_id]}/{max_retries_per_node})...")
-                        continue
+                    max_retries = node_spec.max_retries
+
+                    if retry_count < max_retries:
+                        self.logger.info(f"   ↻ Retrying ({retry_count}/{max_retries})...")
+                        continue  # ✅ No steps adjustment!
                     else:
+                        # Max retries exceeded
+                        self.logger.error(f"   ✗ Max retries ({max_retries}) exceeded for node {current_node_id}")
+                        # ... rest of failure handling
                         # Max retries exceeded - fail the execution
                         self.logger.error(
                             f"   ✗ Max retries ({max_retries}) exceeded for node {current_node_id}"
